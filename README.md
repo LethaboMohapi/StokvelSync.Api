@@ -1,5 +1,11 @@
 # StokvelSync API (.NET 8 + MySQL)
 
+![version](https://img.shields.io/badge/version-v1.0.0-555555?labelColor=555555&color=0e75b6)
+[![Application checks](https://github.com/LethaboMohapi/StokvelSync.Api/actions/workflows/checks.yml/badge.svg)](https://github.com/LethaboMohapi/StokvelSync.Api/actions/workflows/checks.yml)
+[![license](https://img.shields.io/badge/license-MIT-007ec6)](LICENSE.txt)
+[![.NET](https://img.shields.io/badge/.NET-8.0-512bd4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0%2B-4479a1?logo=mysql&logoColor=white)](https://www.mysql.com/)
+
 ## Run
 1. `docker run -d --name sksql -e MYSQL_ROOT_PASSWORD=PacklyTeabou27@ -e MYSQL_DATABASE=stokvelsync -p 3306:3306 mysql:8`
 2. Set `ConnectionStrings:Default`, `Jwt:Key`, `Payments:WebhookSecret`, `Sms:InboundKey` (use `dotnet user-secrets`).
