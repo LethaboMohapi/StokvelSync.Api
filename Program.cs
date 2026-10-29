@@ -1,0 +1,187 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using StokvelSync.Api.Data;
+using StokvelSync.Api.Domain;
+using StokvelSync.Api.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+var cfg = builder.Configuration;
+
+builder.Services.AddDbContext<AppDbContext>(o =>
+    o.UseMySql(cfg.GetConnectionString("Default"), new MySqlServerVersion(new Version(8, 0, 36))));
+builder.Services.AddScoped<LedgerService>();
+builder.Services.AddScoped<RotationService>();
+builder.Services.AddScoped<ContributionService>();
+builder.Services.AddScoped<SmsCommandProcessor>();
+builder.Services.AddSingleton<Localizer>();
+builder.Services.AddSingleton<IPaymentProvider, SandboxPaymentProvider>();
+builder.Services.AddSingleton<ISmsGateway, LogSmsGateway>();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+builder.Services.AddAuthorization();
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o =>
+    o.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidIssuer = cfg["Jwt:Issuer"], ValidAudience = cfg["Jwt:Issuer"],
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cfg["Jwt:Key"]!))
+    });
+
+var app = builder.Build();
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger(); app.UseSwaggerUI();
+    using var scope = app.Services.CreateScope();
+    scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.EnsureCreated(); // swap for migrations in prod
+}
+app.UseAuthentication();
+app.UseAuthorization();
+
+Guid Uid(ClaimsPrincipal p) => Guid.Parse(p.FindFirstValue(ClaimTypes.NameIdentifier)!);
+string Token(User u)
+{
+    var creds = new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cfg["Jwt:Key"]!)), SecurityAlgorithms.HmacSha256);
+    var jwt = new JwtSecurityToken(cfg["Jwt:Issuer"], cfg["Jwt:Issuer"], [new Claim(ClaimTypes.NameIdentifier, u.Id.ToString())],
+        expires: DateTime.UtcNow.AddHours(12), signingCredentials: creds);
+    return new JwtSecurityTokenHandler().WriteToken(jwt);
+}
+async Task<Membership?> Mem(AppDbContext db, Guid stokvelId, Guid uid) =>
+    await db.Memberships.FirstOrDefaultAsync(m => m.StokvelId == stokvelId && m.UserId == uid && m.Active);
+bool IsAdmin(Membership? m) => m is { Role: MemberRole.Chair or MemberRole.Treasurer };
+
+// ---------- Auth ----------
+app.MapPost("/api/auth/register", async (RegisterDto d, AppDbContext db) =>
+{
+    if (d.Pin.Length is < 4 or > 6 || !d.Pin.All(char.IsDigit)) return Results.BadRequest("pin_must_be_4_to_6_digits");
+    var phone = Phone.Normalize(d.Phone);
+    if (await db.Users.AnyAsync(u => u.Phone == phone)) return Results.Conflict("phone_taken");
+    var u = new User { Phone = phone, FullName = d.FullName, PinHash = BCrypt.Net.BCrypt.HashPassword(d.Pin), Language = Localizer.Parse(d.Language, Language.En) };
+    db.Users.Add(u); await db.SaveChangesAsync();
+    return Results.Ok(new { token = Token(u) });
+});
+
+app.MapPost("/api/auth/login", async (LoginDto d, AppDbContext db) =>
+{
+    var phone = Phone.Normalize(d.Phone);
+    var u = await db.Users.FirstOrDefaultAsync(x => x.Phone == phone);
+    return u is null || !BCrypt.Net.BCrypt.Verify(d.Pin, u.PinHash) ? Results.Unauthorized() : Results.Ok(new { token = Token(u) });
+});
+
+// ---------- Stokvels ----------
+app.MapPost("/api/stokvels", async (CreateStokvelDto d, ClaimsPrincipal p, AppDbContext db) =>
+{
+    var s = new Stokvel
+    {
+        Name = d.Name, ContributionAmount = d.ContributionAmount, Frequency = d.Frequency, StartDate = d.StartDate.Date,
+        JoinCode = new string(RandomNumberGenerator.GetItems<char>("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 6))
+    };
+    db.Stokvels.Add(s);
+    db.Memberships.Add(new Membership { StokvelId = s.Id, UserId = Uid(p), Role = MemberRole.Chair });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.Id, s.Name, s.JoinCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/stokvels/join", async (JoinDto d, ClaimsPrincipal p, AppDbContext db) =>
+{
+    var s = await db.Stokvels.FirstOrDefaultAsync(x => x.JoinCode == d.JoinCode.ToUpperInvariant());
+    if (s is null) return Results.NotFound();
+    if (await Mem(db, s.Id, Uid(p)) is not null) return Results.Conflict("already_member");
+    db.Memberships.Add(new Membership { StokvelId = s.Id, UserId = Uid(p), Role = MemberRole.Member });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.Id, s.Name });
+}).RequireAuthorization();
+
+// ---------- Rotation ----------
+app.MapPost("/api/stokvels/{id:guid}/rotation/generate", async (Guid id, GenerateRotationDto? d, ClaimsPrincipal p, AppDbContext db, RotationService rot, CancellationToken ct) =>
+{
+    if (!IsAdmin(await Mem(db, id, Uid(p)))) return Results.Forbid();
+    var r = await rot.GenerateAsync(id, d?.Order, ct);
+    return r.ok ? Results.Ok() : Results.BadRequest(r.error);
+}).RequireAuthorization();
+
+app.MapGet("/api/stokvels/{id:guid}/rotation", async (Guid id, ClaimsPrincipal p, AppDbContext db) =>
+{
+    if (await Mem(db, id, Uid(p)) is null) return Results.Forbid();
+    var slots = await (from r in db.RotationSlots.Where(r => r.StokvelId == id).OrderBy(r => r.CycleNumber)
+                       join u in db.Users on r.RecipientUserId equals u.Id
+                       select new { r.CycleNumber, Recipient = u.FullName, r.DueDate, r.PaidOut }).ToListAsync();
+    return Results.Ok(slots);
+}).RequireAuthorization();
+
+app.MapPost("/api/stokvels/{id:guid}/rotation/{cycle:int}/payout", async (Guid id, int cycle, ClaimsPrincipal p, AppDbContext db, LedgerService ledger, CancellationToken ct) =>
+{
+    if (!IsAdmin(await Mem(db, id, Uid(p)))) return Results.Forbid();
+    var slot = await db.RotationSlots.FirstOrDefaultAsync(r => r.StokvelId == id && r.CycleNumber == cycle, ct);
+    if (slot is null || slot.PaidOut) return Results.BadRequest("invalid_slot");
+    var pot = await db.Contributions.Where(c => c.StokvelId == id && c.CycleNumber == cycle && c.Status == PaymentStatus.Confirmed).SumAsync(c => c.Amount, ct);
+    slot.PaidOut = true;
+    await ledger.AppendAsync(id, slot.RecipientUserId, LedgerType.Payout, -pot, cycle, ct); // saves slot change too
+    return Results.Ok(new { cycle, paidOut = pot });
+}).RequireAuthorization();
+
+// ---------- Contributions & ledger ----------
+app.MapPost("/api/stokvels/{id:guid}/contributions", async (Guid id, ContributeDto d, ClaimsPrincipal p, ContributionService cs, CancellationToken ct) =>
+{
+    var r = await cs.InitiateAsync(Uid(p), id, d.OpId ?? Guid.NewGuid(), Channel.App, ct);
+    return r.ok ? Results.Accepted(value: new { r.code, contributionId = r.contribution!.Id }) : Results.BadRequest(r.code);
+}).RequireAuthorization();
+
+app.MapGet("/api/stokvels/{id:guid}/ledger", async (Guid id, string? lang, ClaimsPrincipal p, AppDbContext db, LedgerService ledger, Localizer t, CancellationToken ct) =>
+{
+    var uid = Uid(p);
+    if (await Mem(db, id, uid) is null) return Results.Forbid();
+    var me = await db.Users.FindAsync([uid], ct);
+    var l = Localizer.Parse(lang, me!.Language);
+    var rows = await (from e in db.Ledger.Where(e => e.StokvelId == id).OrderByDescending(e => e.Id)
+                      join u in db.Users on e.UserId equals u.Id
+                      select new { e.Id, Member = u.FullName, e.Type, e.Amount, e.CycleNumber, e.CreatedAt, e.Hash }).Take(200).ToListAsync(ct);
+    return Results.Ok(new
+    {
+        chainValid = await ledger.VerifyAsync(id, ct),
+        balance = await db.Ledger.Where(e => e.StokvelId == id).SumAsync(e => e.Amount, ct),
+        entries = rows.Select(r => new { r.Id, r.Member, label = t.T("ledger_" + r.Type.ToString().ToLower(), l), r.Amount, r.CycleNumber, r.CreatedAt, r.Hash })
+    });
+}).RequireAuthorization();
+
+// ---------- Offline sync: client queues ops locally (each with its own GUID) and flushes when online ----------
+app.MapPost("/api/sync", async (SyncDto d, ClaimsPrincipal p, ContributionService cs, CancellationToken ct) =>
+{
+    var uid = Uid(p); var results = new List<object>();
+    foreach (var op in d.Operations)
+    {
+        if (op.Type != "contribute") { results.Add(new { op.OpId, status = "unsupported" }); continue; }
+        var r = await cs.InitiateAsync(uid, op.StokvelId, op.OpId, Channel.Offline, ct);
+        results.Add(new { op.OpId, status = r.code });
+    }
+    return Results.Ok(results);
+}).RequireAuthorization();
+
+// ---------- Provider + SMS webhooks (shared-secret; replace with provider HMAC in production) ----------
+app.MapPost("/api/payments/webhook", async (HttpRequest http, WebhookDto d, ContributionService cs, CancellationToken ct) =>
+    http.Headers["X-Signature"].ToString() != cfg["Payments:WebhookSecret"]
+        ? Results.Unauthorized()
+        : Results.Ok(await cs.ConfirmAsync(d.ProviderRef, d.Status == "success", ct)));
+
+app.MapPost("/api/sms/inbound", async (HttpRequest http, InboundSmsDto d, SmsCommandProcessor proc, CancellationToken ct) =>
+{
+    if (http.Headers["X-Sms-Key"].ToString() != cfg["Sms:InboundKey"]) return Results.Unauthorized();
+    await proc.HandleAsync(d.From, d.Text, ct);
+    return Results.Ok();
+});
+
+app.Run();
+
+record RegisterDto(string Phone, string FullName, string Pin, string? Language);
+record LoginDto(string Phone, string Pin);
+record CreateStokvelDto(string Name, decimal ContributionAmount, Frequency Frequency, DateTime StartDate);
+record JoinDto(string JoinCode);
+record GenerateRotationDto(List<Guid>? Order);
+record ContributeDto(Guid? OpId);
+record SyncOp(Guid OpId, string Type, Guid StokvelId, DateTime ClientTimestamp);
+record SyncDto(List<SyncOp> Operations);
+record WebhookDto(string ProviderRef, string Status);
+record InboundSmsDto(string From, string Text);
