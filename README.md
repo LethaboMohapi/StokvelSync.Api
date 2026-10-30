@@ -10,10 +10,12 @@
 1. `docker rm -f sksql`
 2. `docker run -d --name sksql -e MYSQL_ROOT_PASSWORD=YOUR_PASSWORD -e MYSQL_DATABASE=stokvelsync -p 3306:3306 mysql:8`
 3. `dotnet user-secrets set "ConnectionStrings:Default" "Server=localhost;Port=3306;Database=stokvelsync;User=root;Password=YOUR_PASSWORD;"`
+4. Open https://localhost:42161 
 For production later, don’t recreate the database this way. Use migrations, so existing data survives schema changes:
 `dotnet tool install --global dotnet-ef`
 `dotnet ef migrations add Init`
 `dotnet ef database update`
+
 
 ## Try the flow
 register -> create stokvel (returns JoinCode) -> others join -> `rotation/generate` ->
