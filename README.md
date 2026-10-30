@@ -7,10 +7,13 @@
 [![MySQL](https://img.shields.io/badge/MySQL-8.0%2B-4479a1?logo=mysql&logoColor=white)](https://www.mysql.com/)
 
 ## Run
-1. `docker run -d --name sksql -e MYSQL_ROOT_PASSWORD= -e MYSQL_DATABASE=stokvelsync -p 3306:3306 mysql:8`
-2. Set `ConnectionStrings:Default`, `Jwt:Key`, `Payments:WebhookSecret`, `Sms:InboundKey` (use `dotnet user-secrets`).
-3. `dotnet run` then open `/swagger`. Development uses `EnsureCreated`; for production:
-   `dotnet ef migrations add Init && dotnet ef database update`.
+1. `docker rm -f sksql`
+2. `docker run -d --name sksql -e MYSQL_ROOT_PASSWORD=YOUR_PASSWORD -e MYSQL_DATABASE=stokvelsync -p 3306:3306 mysql:8`
+3. `dotnet user-secrets set "ConnectionStrings:Default" "Server=localhost;Port=3306;Database=stokvelsync;User=root;Password=YOUR_PASSWORD;"`
+For production later, don’t recreate the database this way. Use migrations, so existing data survives schema changes:
+`dotnet tool install --global dotnet-ef`
+`dotnet ef migrations add Init`
+`dotnet ef database update`
 
 ## Try the flow
 register -> create stokvel (returns JoinCode) -> others join -> `rotation/generate` ->
