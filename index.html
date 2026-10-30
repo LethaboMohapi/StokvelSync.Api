@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StokvelSync</title>
+<style>
+:root{--bg:#f3f7f5;--card:#fff;--ink:#10231e;--mut:#5d7169;--line:#dfe8e3;--g1:#0f5c4a;--g2:#17936f;--gold:#f2b134;--bad:#d64545;--ok:#17936f;--sh:0 8px 30px rgba(15,60,48,.08)}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1613;--card:#12231e;--ink:#e8f1ed;--mut:#8fa89f;--line:#21382f;--sh:0 8px 30px rgba(0,0,0,.35)}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button,input,select{font:inherit;color:inherit}h1,h2,h3{margin:0;line-height:1.2}
+.btn{border:0;border-radius:12px;padding:.65rem 1.1rem;font-weight:600;cursor:pointer;background:linear-gradient(135deg,var(--g1),var(--g2));color:#fff;transition:transform .15s,box-shadow .15s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(23,147,111,.35)}.btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+.btn.gold{background:var(--gold);color:#3a2a00}.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}.btn.sm{padding:.35rem .75rem;font-size:.85rem}
+input,select{width:100%;padding:.7rem .9rem;border-radius:12px;border:1px solid var(--line);background:var(--card)}input:focus,select:focus,button:focus-visible{outline:3px solid rgba(23,147,111,.35);border-color:var(--g2)}
+label{display:block;font-size:.8rem;font-weight:600;color:var(--mut);margin:.9rem 0 .3rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--sh);padding:1.25rem}
+.auth{min-height:100vh;display:grid;grid-template-columns:1.1fr 1fr}
+.hero{color:#fff;padding:4rem;display:flex;flex-direction:column;justify-content:center;gap:1.2rem;background:
+ repeating-conic-gradient(from 45deg at 50% 50%,rgba(255,255,255,.05) 0 25%,transparent 0 50%) 0 0/56px 56px,linear-gradient(145deg,var(--g1),#0a3d31 70%)}
+.hero h1{font-size:2.6rem}.hero p{opacity:.85;max-width:30rem;font-size:1.05rem}.hero li{margin:.4rem 0}.hero ul{padding-left:1.1rem;opacity:.95}
+.logo{display:flex;align-items:center;gap:.6rem;font-weight:800;font-size:1.2rem}.logo i{width:34px;height:34px;border-radius:10px;background:var(--gold);display:grid;place-items:center;color:#3a2a00;font-style:normal}
+.formwrap{display:grid;place-items:center;padding:2rem}.formwrap .card{width:min(420px,100%)}
+.tabs{display:flex;gap:.3rem;background:var(--bg);padding:.25rem;border-radius:14px;margin-bottom:.5rem}.tabs button{flex:1;border:0;background:none;padding:.5rem;border-radius:11px;cursor:pointer;font-weight:600;color:var(--mut)}.tabs .on{background:var(--card);color:var(--ink);box-shadow:var(--sh)}
+header{display:flex;align-items:center;gap:.8rem;padding:.8rem 1.5rem;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}header .sp{flex:1}header select{width:auto;padding:.4rem .6rem}
+.app{display:grid;grid-template-columns:260px 1fr;gap:1.25rem;padding:1.25rem 1.5rem;max-width:1200px;margin:auto}
+.side{display:flex;flex-direction:column;gap:.5rem}.sk{display:flex;align-items:center;gap:.7rem;padding:.7rem;border-radius:14px;border:1px solid transparent;background:none;text-align:left;cursor:pointer}
+.sk:hover{background:var(--card)}.sk.on{background:var(--card);border-color:var(--g2);box-shadow:var(--sh)}.sk small{display:block;color:var(--mut)}
+.av{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--g1),var(--g2));flex:none}
+.chip{display:inline-block;padding:.15rem .6rem;border-radius:99px;font-size:.75rem;font-weight:700;background:var(--bg);color:var(--mut)}.chip.ok{background:rgba(23,147,111,.15);color:var(--ok)}.chip.wait{background:rgba(242,177,52,.2);color:#b07a00}.chip.bad{background:rgba(214,69,69,.15);color:var(--bad)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.8rem;margin:1rem 0}.stat b{display:block;font-size:1.5rem}.stat span{color:var(--mut);font-size:.8rem}
+.row{display:flex;align-items:center;gap:.8rem;padding:.7rem 0;border-bottom:1px solid var(--line)}.row:last-child{border:0}.row .sp{flex:1}
+.nav{display:flex;gap:.4rem;margin:1rem 0}.nav button{border:0;background:none;padding:.5rem 1rem;border-radius:99px;cursor:pointer;font-weight:600;color:var(--mut)}.nav .on{background:var(--g1);color:#fff}
+.slot .n{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:700;background:var(--bg)}.slot.cur .n{background:var(--gold);color:#3a2a00}
+table{width:100%;border-collapse:collapse}td,th{padding:.6rem .4rem;text-align:left;border-bottom:1px solid var(--line);font-size:.9rem}th{color:var(--mut);font-size:.75rem;text-transform:uppercase}.pos{color:var(--ok);font-weight:700}.neg{color:var(--bad);font-weight:700}code{font-size:.75rem;color:var(--mut)}
+.modal{position:fixed;inset:0;background:rgba(5,20,15,.55);display:grid;place-items:center;padding:1rem;z-index:20}.modal .card{width:min(440px,100%)}
+#toast{position:fixed;bottom:1.2rem;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:.5rem;z-index:30}.t{background:var(--ink);color:var(--bg);padding:.7rem 1.1rem;border-radius:12px;box-shadow:var(--sh)}.t.err{background:var(--bad);color:#fff}
+.empty{text-align:center;color:var(--mut);padding:2rem}.code{font-family:ui-monospace,monospace;letter-spacing:.15em;cursor:pointer}
+@media(max-width:800px){.auth{grid-template-columns:1fr}.hero{padding:2rem}.hero h1{font-size:1.8rem}.app{grid-template-columns:1fr}.side{flex-direction:row;overflow-x:auto}.sk{flex:none}}
+</style>
+</head>
+<body>
+<div id="root"></div><div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);
+const h=(t,a={},...c)=>{const e=document.createElement(t);for(const[k,v]of Object.entries(a)){if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(k==='class')e.className=v;else if(v!==false&&v!=null)e.setAttribute(k,v)}c.flat(9).filter(x=>x!==false&&x!=null).forEach(x=>e.append(x.nodeType?x:document.createTextNode(x)));return e};
+const R=n=>'R'+Number(n).toLocaleString('en-ZA',{minimumFractionDigits:2,maximumFractionDigits:2});
+const ERR={phone_taken:'That phone number is already registered.',pin_must_be_4_to_6_digits:'PIN must be 4 to 6 digits.',already_member:'You are already in this stokvel.',not_member:'You are not a member of this stokvel.',invalid_slot:'That payout slot is not available.',not_current_cycle:'Only the current cycle can be paid out.',cycle_incomplete:'Everyone must contribute before payout.',payment_failed:'The payment prompt failed. Try again.',invalid_op:'Invalid request.'};
+const st={token:localStorage.ss_token||null,lang:localStorage.ss_lang||'en',list:[],sel:null,ov:null,rot:[],led:null,tab:'overview',mode:'login',q:JSON.parse(localStorage.ss_q||'[]')};
+function toast(m,err){const t=h('div',{class:'t'+(err?' err':'')},m);$('#toast').append(t);setTimeout(()=>t.remove(),3800)}
+async function api(path,o={}){
+  const r=await fetch(path,{method:o.body?'POST':(o.method||'GET'),headers:{'Content-Type':'application/json',...(st.token?{Authorization:'Bearer '+st.token}:{})},body:o.body?JSON.stringify(o.body):undefined});
+  const txt=await r.text();let d=txt;try{d=JSON.parse(txt)}catch{}
+  if(r.status===401&&st.token&&!path.includes('auth')){logout();throw new Error('Session expired')}
+  if(!r.ok)throw new Error(r.status===401?'Wrong phone number or PIN.':r.status===429?'Too many attempts. Wait a minute.':r.status===403?'You are not allowed to do that.':ERR[d]||(typeof d==='string'&&d)||'Something went wrong.');
+  return d}
+const run=async(f,ok)=>{try{await f();ok&&toast(ok)}catch(e){toast(e.message,1)}};
+function logout(){localStorage.removeItem('ss_token');st.token=null;st.sel=null;draw()}
+async function loadList(){st.list=await api('/api/stokvels/mine');if(!st.sel&&st.list[0])st.sel=st.list[0].Id??st.list[0].id}
+async function loadSel(){if(!st.sel){st.ov=null;return}
+  const id=st.sel;[st.ov,st.rot,st.led]=await Promise.all([api(`/api/stokvels/${id}/overview`),api(`/api/stokvels/${id}/rotation`),api(`/api/stokvels/${id}/ledger?lang=${st.lang}`)])}
+async function refresh(){await loadList();await loadSel();draw()}
+async function flush(){if(!st.q.length||!st.token||!navigator.onLine)return;
+  const ops=st.q;const res=await api('/api/sync',{body:{operations:ops}});st.q=[];localStorage.ss_q='[]';toast(`Synced ${res.length} offline payment(s)`);refresh()}
+addEventListener('online',()=>run(flush));
+
+// ---------- views ----------
+const J=o=>{const x={};for(const k in o)x[k[0].toLowerCase()+k.slice(1)]=o[k];return x};
+function authView(){
+  const reg=st.mode==='register',f=h('form',{onsubmit:e=>{e.preventDefault();const v=Object.fromEntries(new FormData(f));
+    run(async()=>{const d=await api(reg?'/api/auth/register':'/api/auth/login',{body:reg?{phone:v.phone,fullName:v.name,pin:v.pin,language:v.lang}:{phone:v.phone,pin:v.pin}});
+      st.token=d.token;localStorage.ss_token=d.token;await refresh();flush().catch(()=>{})})}},
+    reg&&h('div',{},h('label',{},'Full name'),h('input',{name:'name',required:1,autocomplete:'name'})),
+    h('label',{},'Phone number'),h('input',{name:'phone',required:1,placeholder:'082 123 4567',inputmode:'tel',autocomplete:'tel'}),
+    h('label',{},'PIN (4–6 digits)'),h('input',{name:'pin',required:1,type:'password',inputmode:'numeric',maxlength:6,autocomplete:reg?'new-password':'current-password'}),
+    reg&&h('div',{},h('label',{},'Language'),h('select',{name:'lang'},[['en','English'],['zu','isiZulu'],['xh','isiXhosa'],['af','Afrikaans']].map(([v,t])=>h('option',{value:v},t)))),
+    h('div',{style:'margin-top:1.2rem'},h('button',{class:'btn',style:'width:100%'},reg?'Create account':'Sign in')));
+  return h('div',{class:'auth'},
+    h('section',{class:'hero'},h('div',{class:'logo'},h('i',{},'S'),'StokvelSync'),h('h1',{},'Your stokvel, transparent and in sync.'),
+      h('p',{},'Save together, rotate payouts fairly, and see every rand on a tamper-evident ledger.'),
+      h('ul',{},h('li',{},'Mobile-money contributions'),h('li',{},'Fair payout rotation'),h('li',{},'Works offline, speaks isiZulu, isiXhosa & Afrikaans'))),
+    h('section',{class:'formwrap'},h('div',{class:'card'},
+      h('div',{class:'tabs'},['login','register'].map(m=>h('button',{class:st.mode===m?'on':'',onclick:()=>{st.mode=m;draw()}},m==='login'?'Sign in':'Register'))),f,
+      h('p',{style:'text-align:center;color:var(--mut);font-size:.8rem;margin:1rem 0 0'},h('a',{href:'/swagger',style:'color:var(--g2)'},'API docs (Swagger)')))))}
+
+function modal(title,body){const m=h('div',{class:'modal',onclick:e=>e.target===m&&m.remove()},h('div',{class:'card'},h('h2',{style:'margin-bottom:.5rem'},title),body(()=>m.remove())));document.body.append(m)}
+function createModal(){modal('New stokvel',close=>{const f=h('form',{onsubmit:e=>{e.preventDefault();const v=Object.fromEntries(new FormData(f));
+  run(async()=>{const r=await api('/api/stokvels',{body:{name:v.name,contributionAmount:+v.amount,frequency:+v.freq,startDate:v.date}});st.sel=r.Id??r.id;close();st.tab='overview';await refresh()},'Stokvel created')}},
+  h('label',{},'Name'),h('input',{name:'name',required:1}),h('label',{},'Contribution (ZAR)'),h('input',{name:'amount',type:'number',min:1,step:'0.01',required:1}),
+  h('label',{},'Frequency'),h('select',{name:'freq'},['Weekly','Fortnightly','Monthly'].map((t,i)=>h('option',{value:i,selected:i==2},t))),
+  h('label',{},'Start date'),h('input',{name:'date',type:'date',required:1,value:new Date().toISOString().slice(0,10)}),
+  h('div',{style:'display:flex;gap:.5rem;margin-top:1.2rem'},h('button',{class:'btn'},'Create'),h('button',{type:'button',class:'btn ghost',onclick:close},'Cancel')));return f})}
+function joinModal(){modal('Join with a code',close=>{const f=h('form',{onsubmit:e=>{e.preventDefault();
+  run(async()=>{const r=await api('/api/stokvels/join',{body:{joinCode:new FormData(f).get('code')}});st.sel=r.Id??r.id;close();await refresh()},'Joined!')}},
+  h('label',{},'6-character join code'),h('input',{name:'code',required:1,maxlength:12,style:'text-transform:uppercase;letter-spacing:.2em'}),
+  h('div',{style:'display:flex;gap:.5rem;margin-top:1.2rem'},h('button',{class:'btn'},'Join'),h('button',{type:'button',class:'btn ghost',onclick:close},'Cancel')));return f})}
+
+const P=o=>o&&Object.fromEntries(Object.entries(o).map(([k,v])=>[k[0].toLowerCase()+k.slice(1),v]));
+function contribute(){const ov=st.ov,opId=crypto.randomUUID();
+  if(!navigator.onLine){st.q.push({opId,type:'contribute',stokvelId:ov.id,clientTimestamp:new Date().toISOString()});localStorage.ss_q=JSON.stringify(st.q);toast('Offline: payment queued, it will sync automatically');return draw()}
+  run(async()=>{await api(`/api/stokvels/${ov.id}/contributions`,{body:{opId}});await refresh()},'Payment prompt sent to your phone')}
+
+function overview(){const o=st.ov,adm=o.role==='Chair'||o.role==='Treasurer',me=o.members.find(m=>m.pending||m.paid);
+  const paid=o.members.filter(m=>m.paid).length,bal=st.led?.balance??0;
+  return h('div',{},
+    h('div',{class:'stats'},[[R(o.contributionAmount),o.frequency+' contribution'],['#'+o.cycle,'Current cycle'],[`${paid}/${o.members.length}`,'Paid this cycle'],[R(bal),'Ledger balance']].map(([b,s])=>h('div',{class:'card stat'},h('b',{},b),h('span',{},s)))),
+    h('div',{class:'card'},h('div',{class:'row'},h('h3',{class:'sp'},'Members'),
+      o.joinCode&&h('span',{class:'chip code',title:'Click to copy',onclick:()=>{navigator.clipboard?.writeText(o.joinCode);toast('Join code copied')}},'Join code: '+o.joinCode),
+      o.myPendingId?h('button',{class:'btn gold sm',disabled:!o.sandbox,title:o.sandbox?'':'Waiting for your provider',onclick:()=>run(async()=>{await api(`/api/dev/contributions/${o.myPendingId}/confirm`,{method:'POST',body:{}});await refresh()},'Payment approved')},o.sandbox?'Simulate approval':'Awaiting approval')
+        :h('button',{class:'btn sm',onclick:contribute},'Contribute '+R(o.contributionAmount))),
+      o.members.map(m=>h('div',{class:'row'},h('div',{class:'av'},m.name.trim()[0]?.toUpperCase()||'?'),h('div',{class:'sp'},h('b',{},m.name),h('small',{style:'display:block;color:var(--mut)'},m.role)),
+        h('span',{class:'chip '+(m.paid?'ok':m.pending?'wait':'')},m.paid?'Paid':m.pending?'Pending':'Not paid')))))}
+
+function rotation(){const o=st.ov,adm=o.role==='Chair'||o.role==='Treasurer';
+  if(!st.rot.length)return h('div',{class:'card empty'},h('p',{},'No payout order yet.'),adm?h('button',{class:'btn',onclick:()=>run(async()=>{await api(`/api/stokvels/${o.id}/rotation/generate`,{body:{}});await refresh()},'Rotation generated')},'Generate rotation'):h('p',{},'Ask your chairperson to generate it.'));
+  return h('div',{class:'card'},st.rot.map(r=>{const x=P(r),cur=x.cycleNumber===o.cycle&&!x.paidOut;
+    return h('div',{class:'row slot'+(cur?' cur':'')},h('div',{class:'n'},x.cycleNumber),h('div',{class:'sp'},h('b',{},x.recipient),h('small',{style:'display:block;color:var(--mut)'},'Due '+new Date(x.dueDate).toLocaleDateString('en-ZA',{day:'numeric',month:'short',year:'numeric'}))),
+      x.paidOut?h('span',{class:'chip ok'},'Paid out'):cur?[h('span',{class:'chip wait'},'Current'),adm&&h('button',{class:'btn gold sm',onclick:()=>confirm('Pay out this cycle?')&&run(async()=>{const r=await api(`/api/stokvels/${o.id}/rotation/${x.cycleNumber}/payout`,{body:{}});await refresh();toast('Paid out '+R(r.paidOut))})},'Pay out')]:h('span',{class:'chip'},'Upcoming'))}))}
+
+function ledger(){const l=st.led;if(!l||!l.entries.length)return h('div',{class:'card empty'},'No transactions yet.');
+  return h('div',{class:'card'},h('div',{class:'row'},h('h3',{class:'sp'},'Transparent ledger'),h('span',{class:'chip '+(l.chainValid?'ok':'bad')},l.chainValid?'✓ Chain verified':'⚠ Chain broken')),
+    h('div',{style:'overflow-x:auto'},h('table',{},h('thead',{},h('tr',{},['Date','Member','Type','Cycle','Amount','Hash'].map(t=>h('th',{},t)))),
+      h('tbody',{},l.entries.map(e=>h('tr',{},h('td',{},new Date(e.createdAt).toLocaleString('en-ZA',{dateStyle:'medium',timeStyle:'short'})),h('td',{},e.member),h('td',{},e.label),h('td',{},'#'+e.cycleNumber),h('td',{class:e.amount<0?'neg':'pos'},R(e.amount)),h('td',{},h('code',{title:e.hash},e.hash.slice(0,10)+'…'))))))))}
+
+function main(){
+  const side=h('aside',{class:'side'},h('button',{class:'btn',onclick:createModal},'+ New stokvel'),h('button',{class:'btn ghost',onclick:joinModal},'Join with code'),
+    st.list.map(s=>{const x=P(s);return h('button',{class:'sk'+(x.id===st.sel?' on':''),onclick:()=>{st.sel=x.id;run(async()=>{await loadSel();draw()})}},h('div',{class:'av'},x.name[0].toUpperCase()),h('div',{},h('b',{},x.name),h('small',{},`${R(x.contributionAmount)} · ${x.role}`)))}));
+  let body;
+  if(!st.ov)body=h('div',{class:'card empty'},h('h2',{},'Welcome 👋'),h('p',{},'Create a stokvel or join one with a code to get started.'));
+  else body=h('div',{},h('h2',{style:'font-size:1.8rem'},st.ov.name),
+    h('div',{class:'nav'},['overview','rotation','ledger'].map(t=>h('button',{class:st.tab===t?'on':'',onclick:()=>{st.tab=t;draw()}},t[0].toUpperCase()+t.slice(1)))),
+    {overview,rotation,ledger}[st.tab]());
+  return h('div',{},h('header',{},h('div',{class:'logo'},h('i',{},'S'),'StokvelSync'),h('span',{class:'sp'}),
+    st.q.length>0&&h('span',{class:'chip wait'},st.q.length+' queued offline'),
+    h('select',{title:'Language',onchange:e=>{st.lang=e.target.value;localStorage.ss_lang=st.lang;run(async()=>{await loadSel();draw()})}},[['en','English'],['zu','isiZulu'],['xh','isiXhosa'],['af','Afrikaans']].map(([v,t])=>h('option',{value:v,selected:v===st.lang},t))),
+    h('a',{href:'/swagger',class:'btn ghost sm',style:'text-decoration:none'},'API'),h('button',{class:'btn ghost sm',onclick:logout},'Sign out')),
+    h('div',{class:'app'},side,h('main',{},body)))}
+
+function draw(){const r=$('#root');r.replaceChildren(st.token?main():authView())}
+draw();if(st.token)run(async()=>{await refresh();await flush()});
+</script>
+</body>
+</html>
