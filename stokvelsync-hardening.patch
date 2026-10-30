@@ -1,0 +1,272 @@
+diff --git a/Data/AppDbContext.cs b/Data/AppDbContext.cs
+index 6352155..fbe64ca 100644
+--- a/Data/AppDbContext.cs
++++ b/Data/AppDbContext.cs
+@@ -23,5 +23,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
+         b.Entity<Contribution>().HasIndex(x => x.ProviderRef);
+         b.Entity<RotationSlot>().HasIndex(x => new { x.StokvelId, x.CycleNumber }).IsUnique();
+         b.Entity<LedgerEntry>().HasIndex(x => new { x.StokvelId, x.Id });
++        b.Entity<LedgerEntry>().HasIndex(x => new { x.StokvelId, x.PrevHash }).IsUnique(); // DB-level backstop: a chain can't fork
+     }
+ }
+diff --git a/Program.cs b/Program.cs
+index 8d73a45..831db10 100644
+--- a/Program.cs
++++ b/Program.cs
+@@ -2,6 +2,8 @@ using System.IdentityModel.Tokens.Jwt;
+ using System.Security.Claims;
+ using System.Security.Cryptography;
+ using System.Text;
++using System.Threading.RateLimiting;
++using Microsoft.AspNetCore.RateLimiting;
+ using Microsoft.AspNetCore.Authentication.JwtBearer;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.IdentityModel.Tokens;
+@@ -12,6 +14,24 @@ using StokvelSync.Api.Services;
+ var builder = WebApplication.CreateBuilder(args);
+ var cfg = builder.Configuration;
+ 
++// ---------- Fail fast on missing / placeholder secrets ----------
++static bool Weak(string? v, int min) => string.IsNullOrWhiteSpace(v) || v.Length < min || v.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase);
++var weak = new List<string>();
++if (Weak(cfg["Jwt:Key"], 32)) weak.Add("Jwt:Key");
++if (Weak(cfg["Payments:WebhookSecret"], 16)) weak.Add("Payments:WebhookSecret");
++if (Weak(cfg["Sms:InboundKey"], 16)) weak.Add("Sms:InboundKey");
++if (weak.Count > 0)
++{
++    var msg = $"Missing or placeholder secrets: {string.Join(", ", weak)}. Set them via dotnet user-secrets or environment variables.";
++    if (builder.Environment.IsDevelopment()) Console.WriteLine("WARNING: " + msg);
++    else throw new InvalidOperationException(msg);
++}
++
++// Constant-time comparison for shared secrets (hash first so lengths match).
++static bool SecretEquals(string? supplied, string? expected) =>
++    !string.IsNullOrEmpty(supplied) && !string.IsNullOrEmpty(expected) &&
++    CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(supplied)), SHA256.HashData(Encoding.UTF8.GetBytes(expected)));
++
+ builder.Services.AddDbContext<AppDbContext>(o =>
+     o.UseMySql(cfg.GetConnectionString("Default"), new MySqlServerVersion(new Version(8, 0, 36))));
+ builder.Services.AddScoped<LedgerService>();
+@@ -24,6 +44,14 @@ builder.Services.AddSingleton<ISmsGateway, LogSmsGateway>();
+ builder.Services.AddEndpointsApiExplorer();
+ builder.Services.AddSwaggerGen();
+ builder.Services.AddAuthorization();
++builder.Services.AddRateLimiter(o =>
++{
++    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
++    // Slows PIN guessing. Behind a reverse proxy, enable ForwardedHeaders so this sees the real client IP.
++    o.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
++        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
++        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
++});
+ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o =>
+     o.TokenValidationParameters = new TokenValidationParameters
+     {
+@@ -38,6 +66,9 @@ if (app.Environment.IsDevelopment())
+     using var scope = app.Services.CreateScope();
+     scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.EnsureCreated(); // swap for migrations in prod
+ }
++app.UseDefaultFiles();
++app.UseStaticFiles();   // serves wwwroot/index.html at /
++app.UseRateLimiter();
+ app.UseAuthentication();
+ app.UseAuthorization();
+ 
+@@ -62,14 +93,14 @@ app.MapPost("/api/auth/register", async (RegisterDto d, AppDbContext db) =>
+     var u = new User { Phone = phone, FullName = d.FullName, PinHash = BCrypt.Net.BCrypt.HashPassword(d.Pin), Language = Localizer.Parse(d.Language, Language.En) };
+     db.Users.Add(u); await db.SaveChangesAsync();
+     return Results.Ok(new { token = Token(u) });
+-});
++}).RequireRateLimiting("auth");
+ 
+ app.MapPost("/api/auth/login", async (LoginDto d, AppDbContext db) =>
+ {
+     var phone = Phone.Normalize(d.Phone);
+     var u = await db.Users.FirstOrDefaultAsync(x => x.Phone == phone);
+     return u is null || !BCrypt.Net.BCrypt.Verify(d.Pin, u.PinHash) ? Results.Unauthorized() : Results.Ok(new { token = Token(u) });
+-});
++}).RequireRateLimiting("auth");
+ 
+ // ---------- Stokvels ----------
+ app.MapPost("/api/stokvels", async (CreateStokvelDto d, ClaimsPrincipal p, AppDbContext db) =>
+@@ -115,11 +146,26 @@ app.MapGet("/api/stokvels/{id:guid}/rotation", async (Guid id, ClaimsPrincipal p
+ app.MapPost("/api/stokvels/{id:guid}/rotation/{cycle:int}/payout", async (Guid id, int cycle, ClaimsPrincipal p, AppDbContext db, LedgerService ledger, CancellationToken ct) =>
+ {
+     if (!IsAdmin(await Mem(db, id, Uid(p)))) return Results.Forbid();
++
++    await using var tx = await db.Database.BeginTransactionAsync(ct);
++    await ledger.LockAsync(id, ct);   // serialises payouts and ledger writes for this stokvel; a double-click waits, then sees PaidOut
++
+     var slot = await db.RotationSlots.FirstOrDefaultAsync(r => r.StokvelId == id && r.CycleNumber == cycle, ct);
+     if (slot is null || slot.PaidOut) return Results.BadRequest("invalid_slot");
++
++    var current = await db.RotationSlots.CountAsync(r => r.StokvelId == id && r.PaidOut, ct) + 1;
++    if (cycle != current) return Results.BadRequest("not_current_cycle");
++
++    var members = await db.Memberships.CountAsync(m => m.StokvelId == id && m.Active, ct);
++    var paidMembers = await db.Contributions
++        .Where(c => c.StokvelId == id && c.CycleNumber == cycle && c.Status == PaymentStatus.Confirmed)
++        .Select(c => c.UserId).Distinct().CountAsync(ct);
++    if (paidMembers < members) return Results.BadRequest("cycle_incomplete");
++
+     var pot = await db.Contributions.Where(c => c.StokvelId == id && c.CycleNumber == cycle && c.Status == PaymentStatus.Confirmed).SumAsync(c => c.Amount, ct);
+     slot.PaidOut = true;
+-    await ledger.AppendAsync(id, slot.RecipientUserId, LedgerType.Payout, -pot, cycle, ct); // saves slot change too
++    await ledger.AppendAsync(id, slot.RecipientUserId, LedgerType.Payout, -pot, cycle, ct); // saves slot change too, inside this transaction
++    await tx.CommitAsync(ct);
+     return Results.Ok(new { cycle, paidOut = pot });
+ }).RequireAuthorization();
+ 
+@@ -162,17 +208,61 @@ app.MapPost("/api/sync", async (SyncDto d, ClaimsPrincipal p, ContributionServic
+ 
+ // ---------- Provider + SMS webhooks (shared-secret; replace with provider HMAC in production) ----------
+ app.MapPost("/api/payments/webhook", async (HttpRequest http, WebhookDto d, ContributionService cs, CancellationToken ct) =>
+-    http.Headers["X-Signature"].ToString() != cfg["Payments:WebhookSecret"]
++    !SecretEquals(http.Headers["X-Signature"].ToString(), cfg["Payments:WebhookSecret"])
+         ? Results.Unauthorized()
+         : Results.Ok(await cs.ConfirmAsync(d.ProviderRef, d.Status == "success", ct)));
+ 
+ app.MapPost("/api/sms/inbound", async (HttpRequest http, InboundSmsDto d, SmsCommandProcessor proc, CancellationToken ct) =>
+ {
+-    if (http.Headers["X-Sms-Key"].ToString() != cfg["Sms:InboundKey"]) return Results.Unauthorized();
++    if (!SecretEquals(http.Headers["X-Sms-Key"].ToString(), cfg["Sms:InboundKey"])) return Results.Unauthorized();
+     await proc.HandleAsync(d.From, d.Text, ct);
+     return Results.Ok();
+ });
+ 
++// ---------- UI support: list my stokvels, dashboard overview, sandbox payment approval ----------
++app.MapGet("/api/stokvels/mine", async (ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
++{
++    var uid = Uid(p);
++    var rows = await (from m in db.Memberships.Where(m => m.UserId == uid && m.Active)
++                      join s in db.Stokvels on m.StokvelId equals s.Id
++                      select new { s.Id, s.Name, s.ContributionAmount, s.Frequency, m.Role }).ToListAsync(ct);
++    return Results.Ok(rows.Select(r => new { r.Id, r.Name, r.ContributionAmount, Frequency = r.Frequency.ToString(), Role = r.Role.ToString() }));
++}).RequireAuthorization();
++
++app.MapGet("/api/stokvels/{id:guid}/overview", async (Guid id, ClaimsPrincipal p, AppDbContext db, ContributionService cs, IWebHostEnvironment env, CancellationToken ct) =>
++{
++    var uid = Uid(p);
++    var me = await Mem(db, id, uid);
++    if (me is null) return Results.Forbid();
++    var s = (await db.Stokvels.FindAsync([id], ct))!;
++    var cycle = await cs.CurrentCycleAsync(id, ct);
++    var st = await db.Contributions.Where(c => c.StokvelId == id && c.CycleNumber == cycle && c.Status != PaymentStatus.Failed)
++        .Select(c => new { c.Id, c.UserId, c.Status }).ToListAsync(ct);
++    var members = await (from m in db.Memberships.Where(m => m.StokvelId == id && m.Active)
++                         join u in db.Users on m.UserId equals u.Id
++                         select new { u.Id, u.FullName, m.Role }).ToListAsync(ct);
++    return Results.Ok(new
++    {
++        s.Id, s.Name, s.ContributionAmount, Frequency = s.Frequency.ToString(), Role = me.Role.ToString(),
++        JoinCode = IsAdmin(me) ? s.JoinCode : null, Cycle = cycle, Sandbox = env.IsDevelopment(),
++        MyPendingId = st.FirstOrDefault(x => x.UserId == uid && x.Status == PaymentStatus.Pending)?.Id,
++        Members = members.Select(m => new
++        {
++            m.Id, Name = m.FullName, Role = m.Role.ToString(),
++            Paid = st.Any(x => x.UserId == m.Id && x.Status == PaymentStatus.Confirmed),
++            Pending = st.Any(x => x.UserId == m.Id && x.Status == PaymentStatus.Pending)
++        })
++    });
++}).RequireAuthorization();
++
++if (app.Environment.IsDevelopment())   // stands in for the mobile-money provider's webhook while using the sandbox
++    app.MapPost("/api/dev/contributions/{id:guid}/confirm", async (Guid id, ClaimsPrincipal p, AppDbContext db, ContributionService cs, CancellationToken ct) =>
++    {
++        var uid = Uid(p);
++        var c = await db.Contributions.FirstOrDefaultAsync(x => x.Id == id && x.UserId == uid, ct);
++        return c?.ProviderRef is null ? Results.NotFound() : Results.Ok(await cs.ConfirmAsync(c.ProviderRef, true, ct));
++    }).RequireAuthorization();
++
+ app.Run();
+ 
+ record RegisterDto(string Phone, string FullName, string Pin, string? Language);
+diff --git a/Services/ContributionService.cs b/Services/ContributionService.cs
+index 85f590b..b275032 100644
+--- a/Services/ContributionService.cs
++++ b/Services/ContributionService.cs
+@@ -16,7 +16,10 @@ public class ContributionService(AppDbContext db, IPaymentProvider pay, LedgerSe
+     public async Task<(bool ok, string code, Contribution? contribution)> InitiateAsync(Guid userId, Guid stokvelId, Guid idempotencyKey, Channel channel, CancellationToken ct)
+     {
+         var existing = await db.Contributions.FirstOrDefaultAsync(c => c.IdempotencyKey == idempotencyKey, ct);
+-        if (existing is not null) return (true, "duplicate", existing);   // safe retry from offline queue
++        if (existing is not null)
++            return existing.UserId == userId && existing.StokvelId == stokvelId
++                ? (true, "duplicate", existing)      // safe retry from offline queue
++                : (false, "invalid_op", null);       // key belongs to someone else: reveal nothing
+ 
+         var isMember = await db.Memberships.AnyAsync(m => m.StokvelId == stokvelId && m.UserId == userId && m.Active, ct);
+         if (!isMember) return (false, "not_member", null);
+@@ -29,7 +32,14 @@ public class ContributionService(AppDbContext db, IPaymentProvider pay, LedgerSe
+             IdempotencyKey = idempotencyKey, CycleNumber = await CurrentCycleAsync(stokvelId, ct), Status = PaymentStatus.Pending
+         };
+         db.Contributions.Add(c);
+-        await db.SaveChangesAsync(ct);
++        try { await db.SaveChangesAsync(ct); }
++        catch (DbUpdateException)   // two retries of the same OpId raced; the unique index let one win
++        {
++            db.Entry(c).State = EntityState.Detached;
++            var dup = await db.Contributions.FirstOrDefaultAsync(x => x.IdempotencyKey == idempotencyKey && x.UserId == userId && x.StokvelId == stokvelId, ct);
++            if (dup is not null) return (true, "duplicate", dup);
++            throw;
++        }
+ 
+         var r = await pay.InitiateAsync(new PaymentRequest(user.Phone, c.Amount, c.Id.ToString()), ct);
+         c.Status = r.Accepted ? PaymentStatus.Pending : PaymentStatus.Failed;
+@@ -40,13 +50,21 @@ public class ContributionService(AppDbContext db, IPaymentProvider pay, LedgerSe
+ 
+     public async Task<bool> ConfirmAsync(string providerRef, bool success, CancellationToken ct)
+     {
+-        var c = await db.Contributions.FirstOrDefaultAsync(x => x.ProviderRef == providerRef, ct);
+-        if (c is null || c.Status != PaymentStatus.Pending) return false;   // unknown or already settled (webhooks repeat)
+-        c.Status = success ? PaymentStatus.Confirmed : PaymentStatus.Failed;
+-        await db.SaveChangesAsync(ct);
++        var c = await db.Contributions.AsNoTracking().FirstOrDefaultAsync(x => x.ProviderRef == providerRef, ct);
++        if (c is null) return false;
++
++        await using var tx = await db.Database.BeginTransactionAsync(ct);
++        // Atomic claim: only one caller can flip Pending -> settled, so repeated or concurrent webhooks can't double-credit.
++        var newStatus = success ? PaymentStatus.Confirmed : PaymentStatus.Failed;
++        var claimed = await db.Contributions.Where(x => x.Id == c.Id && x.Status == PaymentStatus.Pending)
++            .ExecuteUpdateAsync(set => set.SetProperty(x => x.Status, newStatus), ct);
++        if (claimed == 0) return false;   // already settled (webhooks repeat)
++
++        // Status change and ledger entry commit together or not at all.
++        if (success) await ledger.AppendAsync(c.StokvelId, c.UserId, LedgerType.Contribution, c.Amount, c.CycleNumber, ct);
++        await tx.CommitAsync(ct);
+         if (!success) return true;
+ 
+-        await ledger.AppendAsync(c.StokvelId, c.UserId, LedgerType.Contribution, c.Amount, c.CycleNumber, ct);
+         var user = (await db.Users.FindAsync([c.UserId], ct))!;
+         var s = (await db.Stokvels.FindAsync([c.StokvelId], ct))!;
+         await sms.SendAsync(user.Phone, t.T("contribution_received", user.Language, c.Amount.ToString("F2"), s.Name), ct);
+diff --git a/Services/LedgerService.cs b/Services/LedgerService.cs
+index 70f34e7..236ec4a 100644
+--- a/Services/LedgerService.cs
++++ b/Services/LedgerService.cs
+@@ -8,8 +8,17 @@ namespace StokvelSync.Api.Services;
+ 
+ public class LedgerService(AppDbContext db)
+ {
++    /// Row-lock the stokvel so only one writer at a time can extend its ledger chain. Call inside a transaction.
++    public async Task LockAsync(Guid stokvelId, CancellationToken ct = default) =>
++        await db.Stokvels.FromSqlInterpolated($"SELECT * FROM `Stokvels` WHERE `Id` = {stokvelId} FOR UPDATE")
++            .AsNoTracking().ToListAsync(ct);
++
+     public async Task<LedgerEntry> AppendAsync(Guid stokvelId, Guid userId, LedgerType type, decimal amount, int cycle, CancellationToken ct = default)
+     {
++        // Join the caller's transaction if there is one, otherwise own a short one.
++        await using var ownTx = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
++        await LockAsync(stokvelId, ct);
++
+         var prev = await db.Ledger.Where(l => l.StokvelId == stokvelId).OrderByDescending(l => l.Id)
+             .Select(l => l.Hash).FirstOrDefaultAsync(ct) ?? "GENESIS";
+         var now = DateTime.UtcNow;
+@@ -18,6 +27,7 @@ public class LedgerService(AppDbContext db)
+         e.Hash = Compute(e);
+         db.Ledger.Add(e);
+         await db.SaveChangesAsync(ct);
++        if (ownTx is not null) await ownTx.CommitAsync(ct);
+         return e;
+     }
+ 
