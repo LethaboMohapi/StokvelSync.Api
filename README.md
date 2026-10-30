@@ -7,7 +7,7 @@
 [![MySQL](https://img.shields.io/badge/MySQL-8.0%2B-4479a1?logo=mysql&logoColor=white)](https://www.mysql.com/)
 
 ## Run
-1. `docker run -d --name sksql -e MYSQL_ROOT_PASSWORD= -e MYSQL_DATABASE=stokvelsync -p 3306:3306 mysql:8`
+1. `docker run -d --name sksql -e MYSQL_ROOT_PASSWORD=PacklyTeabou27@ -e MYSQL_DATABASE=stokvelsync -p 3306:3306 mysql:8`
 2. Set `ConnectionStrings:Default`, `Jwt:Key`, `Payments:WebhookSecret`, `Sms:InboundKey` (use `dotnet user-secrets`).
 3. `dotnet run` then open `/swagger`. Development uses `EnsureCreated`; for production:
    `dotnet ef migrations add Init && dotnet ef database update`.

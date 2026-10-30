@@ -8,8 +8,17 @@ namespace StokvelSync.Api.Services;
 
 public class LedgerService(AppDbContext db)
 {
+    /// Row-lock the stokvel so only one writer at a time can extend its ledger chain. Call inside a transaction.
+    public async Task LockAsync(Guid stokvelId, CancellationToken ct = default) =>
+        await db.Stokvels.FromSqlInterpolated($"SELECT * FROM `Stokvels` WHERE `Id` = {stokvelId} FOR UPDATE")
+            .AsNoTracking().ToListAsync(ct);
+
     public async Task<LedgerEntry> AppendAsync(Guid stokvelId, Guid userId, LedgerType type, decimal amount, int cycle, CancellationToken ct = default)
     {
+        // Join the caller's transaction if there is one, otherwise own a short one.
+        await using var ownTx = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
+        await LockAsync(stokvelId, ct);
+
         var prev = await db.Ledger.Where(l => l.StokvelId == stokvelId).OrderByDescending(l => l.Id)
             .Select(l => l.Hash).FirstOrDefaultAsync(ct) ?? "GENESIS";
         var now = DateTime.UtcNow;
@@ -18,6 +27,7 @@ public class LedgerService(AppDbContext db)
         e.Hash = Compute(e);
         db.Ledger.Add(e);
         await db.SaveChangesAsync(ct);
+        if (ownTx is not null) await ownTx.CommitAsync(ct);
         return e;
     }
 

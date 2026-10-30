@@ -23,5 +23,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         b.Entity<Contribution>().HasIndex(x => x.ProviderRef);
         b.Entity<RotationSlot>().HasIndex(x => new { x.StokvelId, x.CycleNumber }).IsUnique();
         b.Entity<LedgerEntry>().HasIndex(x => new { x.StokvelId, x.Id });
+        b.Entity<LedgerEntry>().HasIndex(x => new { x.StokvelId, x.PrevHash }).IsUnique(); // DB-level backstop: a chain can't fork
     }
 }
