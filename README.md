@@ -5,6 +5,7 @@
 [![license](https://img.shields.io/badge/license-MIT-007ec6)](LICENSE.txt)
 [![.NET](https://img.shields.io/badge/.NET-8.0-512bd4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0%2B-4479a1?logo=mysql&logoColor=white)](https://www.mysql.com/)
+![Code by Lethabo Mohapi](https://img.shields.io/badge/Code_by-Lethabo_Mohapi-blue)
 
 ## Run
 1. `docker rm -f sksql`
